@@ -1,0 +1,208 @@
+# FILE: ./.github/actions/deploy/k8s/action.yml
+# DESCRIPTION: allows deploying application to kubernetes cluster using kubeconfig.
+
+name: 'Deploy to Kubernetes Cluster'
+description: 'deploy application to kubernetes cluster with kubeconfig'
+branding:
+  icon: 'terminal'
+  color: 'blue'
+  name: 'k8s deploy'
+
+inputs:
+  kubeconfig:
+    description: 'k8s kubeconfig'
+    required: true
+
+  deployment:
+    description: 'k8s deployment config path, to be applied to cluster'
+    required: false
+    default: './.github/k8s/'
+  namespace:
+    description: 'set current namespace'
+    required: false
+    default: ''
+  context:
+    description: 'set current context'
+    required: false
+    default: ''
+
+  verify_access:
+    description: 'verify access list to cluster'
+    required: false
+    default: 'true'
+
+  kubectl_version:
+    description: 'kubectl version'
+    required: false
+    default: 'latest'
+
+  helm_version:
+    description: 'helm version'
+    required: false
+    default: 'latest'
+  helm_files:
+    description: 'helm values files to be applied to chart'
+    required: false
+    default: ''
+  helm_properties:
+    description: 'helm override values to be applied to chart'
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: checkout
+      uses: actions/checkout@v6
+
+    - id: kubectl
+      name: 'install kubectl'
+      uses: azure/setup-kubectl@v4
+      with:
+        version: ${{ inputs.kubectl_version }}
+
+    - id: helm
+      name: 'install helm'
+      uses: azure/setup-helm@v4
+      with:
+        version: ${{ inputs.helm_version }}
+
+    - id: configure
+      name: 'configure kubectl'
+      shell: bash
+      run: |
+        echo "[k8s] - configure: setting up kubeconfig..."
+        mkdir -p $HOME/.kube
+        printf '%s' "${{ inputs.kubeconfig }}" > "$HOME/.kube/config"
+        chmod 600 "$HOME/.kube/config"
+        export KUBECONFIG="$HOME/.kube/config"
+        echo "KUBECONFIG=$HOME/.kube/config" >> "$GITHUB_ENV"
+        echo "[k8s] - configure: KUBECONFIG env is been set"
+        
+        if [[ -n "${{ inputs.context }}" ]]; then
+          echo "[k8s] - configure: set kubectl context: ${{ inputs.context }}"
+          kubectl config use-context ${{ inputs.context }}
+        fi
+        if [[ -n "${{ inputs.namespace }}" ]]; then
+          echo "[k8s] - configure: set kubectl namespace: ${{ inputs.namespace }}"
+          kubectl config set-context --current --namespace=${{ inputs.namespace }}
+        fi
+
+    - id: connect
+      name: 'check connection'
+      shell: bash
+      run: |
+        echo "[k8s] - connect: checking connection to cluster..."
+        kubectl --request-timeout=10s get --raw='/readyz' >/dev/null
+        echo "[k8s] - connect: API server reachable..."
+
+    - id: verify
+      name: 'verify cluster access'
+      if: ${{ inputs.verify_access == 'true' }}
+      shell: bash
+      run: |
+        echo "[k8s] - verify: verifying cluster access..."
+        echo "[k8s] - verify: current context - $(kubectl config current-context)"
+        echo "[k8s] - verify: current namespace - $(kubectl config view --minify -o jsonpath='{..namespace}')"
+        
+        HAS_ACCESS=0
+        rules=(
+          "get deployments.apps"
+          "create deployments.apps"
+          "patch deployments.apps"
+          "watch deployments.apps"
+        
+          "get services"
+          "create services"
+          "patch services"
+        
+          "get ingresses.networking.k8s.io"
+          "create ingresses.networking.k8s.io"
+          "patch ingresses.networking.k8s.io"
+        
+          "get configmaps"
+          "create configmaps"
+          "patch configmaps"
+        
+          "get secrets"
+          "create secrets"
+          "patch secrets"
+        
+          "get pods"
+          "watch pods"
+        )
+        
+        for rule in "${rules[@]}"; do
+          verb="${rule%% *}"
+          res="${rule#* }"
+          kubectl auth can-i "$verb" "$res" >/dev/null || {
+            echo "::error::[k8s] - verify: current user is not authorized to $rule"
+            HAS_ACCESS=1
+          }
+        done
+        if [[ "$HAS_ACCESS" -ne 0 ]]; then
+          echo "::error::[k8s] - verify: fix RBAC rule/s"
+          exit 1
+        fi
+        echo "[k8s] - verify: RBAC is been verified!"
+
+    - id: template
+      name: 'template helm chart'
+      shell: bash
+      run: |
+        CHART_FILE="${{ inputs.deployment }}/Chart.yaml"
+        TEMPLATES_DIR="${{ inputs.deployment }}/templates"
+        
+        if [[ -f "$CHART_FILE" && -d "$TEMPLATES_DIR" ]]; then
+          echo "[k8s] - template: templating helm chart..."
+        
+          helm_args=()
+          while read -r values_file; do
+            [[ -z "$values_file" ]] && continue
+            if [[ "$values_file" == *"../"* ]]; then
+              echo "::error::[k8s] - template: invalid values file path (contains ../): $values_file"
+              exit 1
+            fi
+            if [[ ! -f "$values_file" ]]; then
+              echo "::error::[k8s] - template: values file not found: $values_file"
+              exit 1
+            fi
+        
+            helm_args+=(-f "$values_file")
+          done < <(echo "${{ inputs.helm_files }}" | tr -s '[:space:]' '\n')
+        
+          while read -r kv; do
+            [[ -z "$kv" ]] && continue
+            if [[ "$kv" != *"="* ]]; then
+              echo "::error::[k8s] - template: invalid --set item (expected KEY=VALUE): $kv"
+              exit 1
+            fi
+        
+            helm_args+=(--set "$kv")
+          done < <(echo "${{ inputs.helm_properties }}" | tr -s '[:space:]' '\n')
+        
+          helm template ${{ inputs.deployment }} ${helm_args[@]} > "${{ inputs.deployment }}/deployment_rendered.yml"
+          echo "[k8s] - template: helm chart templated - ${{ inputs.deployment }}/deployment_rendered.yml"
+        fi
+
+    - id: deploy
+      name: 'deploy to kubernetes'
+      shell: bash
+      run: |
+        echo "[k8s] - deploy: looking for deployments..."
+        
+        TARGET="${{ inputs.deployment }}"
+        if [[ -f "${{ inputs.deployment }}/deployment_rendered.yml" ]]; then
+          echo "[k8s] - deploy: found deployment_rendered.yml"
+          TARGET="${{ inputs.deployment }}/deployment_rendered.yml"
+        fi
+        
+        echo "[k8s] - deploy: validating deployment..."        
+        kubectl apply -f "$TARGET" --dry-run=client --validate=true
+        kubectl apply -f "$TARGET" --dry-run=server --validate=true
+        
+        echo "[k8s] - deploy: diffing deployment..."
+        kubectl diff -f "$TARGET" || true
+
+        echo "[k8s] - deploy: deploying to kubernetes..."
+        kubectl apply -f "$TARGET"

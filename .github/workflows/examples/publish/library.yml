@@ -1,0 +1,38 @@
+# File .github/workflows/publish.yml
+
+# Runs on creating a new release tag (when this release marked as published)
+# this workflow publishes maven artifact and does increment the next SNAPSHOT version
+
+name: PUBLISH library
+on:
+  workflow_dispatch: #Triggers on button click
+  release: #Triggers on release creation
+    types:
+      - published
+  push: #Triggers on push to branches
+    branches:
+      - 'master'
+      - 'feature/**'
+      - 'hotfix/**'
+
+jobs:
+  validate: # SERVICE LEVEL - CHECK AND SHARE VARIABLES
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.repository.outputs.environment }}
+      repository_type: ${{ steps.repository.outputs.repository_type }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: repository
+        uses: ./.github/actions/common/validate
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build and Publish
+        uses: ./.github/actions/publish/library

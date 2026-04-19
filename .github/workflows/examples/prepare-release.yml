@@ -1,0 +1,60 @@
+# File .github/workflows/prepare-release.yml
+
+# Runs manually if needed (release can be prepared through GitHub UI)
+# when executed will prepare DRAFT release in GitHub for current version
+
+name: release PROCESS
+on:
+  workflow_dispatch:
+    inputs:
+      releaseVersion:
+        description: "Release Version (v1.2.3 or 1.2.3)"
+        required: false
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: parse version
+        env:
+          RELEASE_VERSION: ${{ inputs.releaseVersion }}
+        run: |
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          POM_VERSION=${POM_VERSION/-SNAPSHOT/}
+          INPUT_VERSION=${RELEASE_VERSION#v}
+          
+          echo "POM_VERSION=$POM_VERSION" >> $GITHUB_ENV
+          echo "INPUT_VERSION=$INPUT_VERSION" >> $GITHUB_ENV
+
+      - name: create Release DRAFT
+        env:
+          RELEASE_VERSION: ${{ env.INPUT_VERSION || env.POM_VERSION }}
+        run: |
+          echo "pom   version: ${{ env.POM_VERSION }}"
+          echo "input version: ${{ inputs.releaseVersion }} -> ${{ env.INPUT_VERSION }}"
+          
+          if ! [[ ${{ env.RELEASE_VERSION }} =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::ERROR: Invalid version format: ${{ env.RELEASE_VERSION }}"
+            echo "::warning::expected format: MAJOR.MINOR.PATCH (v1.2.3 or 1.2.3)"
+            exit 1
+          fi
+          
+          if [ "${{ env.POM_VERSION }}" != "${{ env.RELEASE_VERSION }}" ]; then
+            echo "::error::ERROR: release and pom versions mismatch"
+            echo "::warning::pom.xml version(${{ env.POM_VERSION }}) != release version(${{ env.RELEASE_VERSION }})"
+            exit 1
+          fi
+          
+          echo "Creating release draft: v${{ env.RELEASE_VERSION }}"
+          gh release create v${{ env.RELEASE_VERSION }} \
+            --draft \
+            --title "Release v${{ env.RELEASE_VERSION }}" \
+            --generate-notes

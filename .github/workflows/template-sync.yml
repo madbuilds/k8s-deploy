@@ -1,0 +1,68 @@
+# File .github/workflows/template-sync.yml
+# DESCRIPTION: automate synchronization with TEMPLATE repo.
+#              template changes will be applied to project repo (except: .templatesyncignore)
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+env:
+  SOURCE_BRANCH:     master
+  SOURCE_REPOSITORY: madbuilds/template-repository
+  PROJECT_OWNER: ${{ github.repository_owner }}
+  PROJECT_ID:    7
+
+  SYNC_APP_ID:        ${{ secrets.MADBUILDS_SYNCAPP_APP_ID }}
+  SYNC_CLIENT_ID:     ${{ secrets.MADBUILDS_SYNCAPP_CLIENT_ID }}
+  SYNC_CLIENT_SECRET: ${{ secrets.MADBUILDS_SYNCAPP_CLIENT_SECRET }}
+  SYNC_PRIVATE_KEY:   ${{ secrets.MADBUILDS_SYNCAPP_PRIVATE_KEY }}
+
+jobs:
+  template-sync:
+    if: ${{ !startsWith(github.repository, 'madbuilds/template-') }}
+    runs-on: ubuntu-latest
+    permissions: # https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs
+      contents: write
+      pull-requests: write
+
+    steps:
+      - id: auth # https://github.com/tibdex/github-app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id:      ${{ env.SYNC_APP_ID }}
+          private_key: ${{ env.SYNC_PRIVATE_KEY }}
+
+      - id: checkout # https://github.com/actions/checkout#usage
+        uses: actions/checkout@v6
+        with:
+          token: '${{ steps.auth.outputs.token }}'
+
+      - id: sync # https://github.com/marketplace/actions/actions-template-sync#usage
+        uses: AndreasAugustin/actions-template-sync@v2
+        with:
+          source_gh_token: ${{ steps.auth.outputs.token }}
+          source_repo_path: ${{ env.SOURCE_REPOSITORY }}
+          upstream_branch: ${{ env.SOURCE_BRANCH }}
+          template_sync_ignore_file_path: "./.github/.templatesyncignore"
+          pr_branch_name_prefix: "sync/upstream_change"
+          pr_commit_msg: "sync(template): merge template changes :up:"
+          pr_labels: "template_sync,upstream,sync"
+          pr_title: "[UPSTREAM] Template Repository - synchronize"
+
+      - id: pr
+        if: ${{ steps.sync.outputs.pr_branch != '' }}
+        name: get pr number
+        run: |
+          PR_NUMBER="$(gh pr view "${{ steps.sync.outputs.pr_branch }}" --json number --jq '.number' 2>/dev/null || true)"
+          echo "PR URL: ${{ steps.sync.outputs.pr_branch }}"
+          echo "PR NUMBER: $PR_NUMBER"
+          echo "number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/common/add-to-project
+        if: ${{ steps.pr.outputs.number != '' }}
+        with:
+          GITHUB_TOKEN: ${{ steps.auth.outputs.token }}
+          project_owner: ${{ env.PROJECT_OWNER }}
+          project_number: ${{ env.PROJECT_ID }}
+          pr_number: ${{ steps.pr.outputs.number }}

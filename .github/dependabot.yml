@@ -1,0 +1,20 @@
+version: 2
+updates:
+  - package-ecosystem: maven
+    directory: /
+    open-pull-requests-limit: 5
+    schedule:
+      interval: monthly
+      day: monday
+    labels:
+      - dependencies
+      - java
+    commit-message:
+      prefix: "[maven]"
+    groups:
+      spring:
+        patterns:
+          - "org.springframework.boot:*"
+      plugin:
+        patterns:
+          - "*plugin*"

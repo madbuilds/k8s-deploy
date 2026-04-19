@@ -1,0 +1,111 @@
+# File .github/workflows/repository-init.yml
+# DESCRIPTION: once new repo created from this template:
+#               * retrieves repository custom_properties
+#               * copy template from: ./template/${TYPE}/${LANGUAGE}
+#               * removes unnecessary files
+#              for easily quick start with coding (avoid creating common files manually)
+
+name: init repository on create
+
+on:
+  workflow_dispatch: #Triggers on button click
+
+env:
+  GITHUB_ACTIONS_NAME: github-actions[bot]
+
+  SYNC_APP_ID:        ${{ secrets.MADBUILDS_SYNCAPP_APP_ID }}
+  SYNC_CLIENT_ID:     ${{ secrets.MADBUILDS_SYNCAPP_CLIENT_ID }}
+  SYNC_CLIENT_SECRET: ${{ secrets.MADBUILDS_SYNCAPP_CLIENT_SECRET }}
+  SYNC_PRIVATE_KEY:   ${{ secrets.MADBUILDS_SYNCAPP_PRIVATE_KEY }}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  validate: # SERVICE LEVEL - CHECK AND SHARE VARIABLES
+    runs-on: ubuntu-latest
+    outputs:
+      init_branch: init
+      source_branch: ${{ github.ref_name }}
+      repository_type: ${{ steps.repository.outputs.repository_type }}
+      repository_language: ${{ steps.repository.outputs.repository_language }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: repository
+        uses: ./.github/actions/common/validate
+
+  initialize:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - id: auth # https://github.com/tibdex/github-app-token
+        uses: tibdex/github-app-token@v2
+        with:
+          app_id: ${{ env.SYNC_APP_ID }}
+          private_key: ${{ env.SYNC_PRIVATE_KEY }}
+
+      - id: checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # Ensures full history is available for PR
+          token: '${{ steps.auth.outputs.token }}'
+
+      - name: copy template files
+        run: |
+          TEMPLATE_PATH="./template/${{ needs.validate.outputs.repository_type }}/${{ needs.validate.outputs.repository_language }}"
+          if [ ! -d "$TEMPLATE_PATH" ]; then
+            echo "[template] - copy: path not exist - $TEMPLATE_PATH"
+            TEMPLATE_PATH="./template/${{ needs.validate.outputs.repository_type }}/default"
+            if [ ! -d "$TEMPLATE_PATH" ]; then
+              echo "[template] - copy: default path not found - $TEMPLATE_PATH"
+              TEMPLATE_PATH="./template/default/default"
+            fi
+          fi
+          
+          echo "[template] - copy: copying files from - $TEMPLATE_PATH"
+          shopt -s dotglob
+          cp -rfv "$TEMPLATE_PATH"/* ./
+          shopt -u dotglob
+          
+          WORKFLOW_PATH="./.github/workflows/examples/publish/${{ needs.validate.outputs.repository_type }}.yml"
+          if [ -f "$WORKFLOW_PATH" ]; then
+            echo "[template] - copy: copying workflow - publish/${{ needs.validate.outputs.repository_type }}.yml > publish.yml"
+            cp $WORKFLOW_PATH ./.github/workflows/publish.yml
+          fi
+
+      - name: update template-sync ignore file
+        run: |
+          TEMPLATE_PATH="./template/${{ needs.validate.outputs.repository_type }}/${{ needs.validate.outputs.repository_language }}"
+          if [ -d "$TEMPLATE_PATH" ]; then
+            echo "updating template ignore file"
+          else
+            echo "Template path $TEMPLATE_PATH does not exist. skipping..."
+          fi
+
+      - name: remove template files
+        run: |
+          rm -rf ./.github/workflows/repository-init.yml
+          rm -rf ./.github/workflows/repository-update.yml
+          rm -rf ./template
+
+      - name: commit and push changes
+        run: |
+          git config --global user.name  '${{ env.GITHUB_ACTIONS_NAME }}'
+          git config --global user.email '${{ env.GITHUB_ACTIONS_NAME }}@users.noreply.github.com'
+          git checkout -b ${{ needs.validate.outputs.init_branch }}
+          git add .
+          git commit -m "cleanup: template files removed"
+          git push origin ${{ needs.validate.outputs.init_branch }}
+        env:
+          GITHUB_TOKEN: ${{ steps.auth.outputs.token }}
+
+      - name: create pull request
+        run: |
+          gh pr create \
+            -B ${{ needs.validate.outputs.source_branch }} \
+            -H ${{ needs.validate.outputs.init_branch }} \
+            --title 'Initialize repository on create (${{ needs.validate.outputs.init_branch }} -> ${{ needs.validate.outputs.source_branch }})' \
+            --body 'Created by Github action'
+        env:
+          GITHUB_TOKEN: ${{ steps.auth.outputs.token }}

@@ -1,0 +1,65 @@
+# File .github/workflows/publish.yml
+
+# Runs on creating a new release tag (when this release marked as published),
+# this workflow publishes artifact and does increment the next SNAPSHOT version
+
+name: PUBLISH service
+on:
+  workflow_dispatch: #Triggers on button click
+  release: #Triggers on release creation
+    types:
+      - published
+  push: #Triggers on push to branches
+    branches:
+      - 'master'
+      - 'feature/**'
+      - 'hotfix/**'
+
+jobs:
+  validate: # SERVICE LEVEL - CHECK AND SHARE VARIABLES
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.repository.outputs.environment }}
+      repository_type: ${{ steps.repository.outputs.repository_type }}
+      repository_name: ${{ steps.repository.outputs.repository_name }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: repository
+        uses: ./.github/actions/common/validate
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # write - if you want to push changes
+      packages: write     # Crucial for pushing package
+      attestations: write # Optional, for supply-chain security
+      id-token: write     # Optional, for OIDC
+    outputs:
+      image-name: ${{ steps.image.outputs.image-name }}
+      image-tags: ${{ steps.image.outputs.image-tags }}
+      image-tag:  ${{ steps.image.outputs.image-tag }}
+      image-digest: ${{ steps.image.outputs.image-digest }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: image
+        uses: ./.github/actions/publish/docker
+
+  deploy:
+    environment: ${{ needs.validate.outputs.environment }}
+    needs:
+      - validate
+      - publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/deploy/k8s
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+          verify_access: no
+          helm_files: ./.github/k8s/values.yml
+          helm_properties: |
+            deployment.environment=${{ needs.validate.outputs.environment }}
+            service.name=${{ needs.validate.outputs.repository_name }}
+            service.image.name=ghcr.io/${{ github.repository_owner }}/${{ needs.publish.outputs.image-name }}
+            service.image.tag=${{ needs.publish.outputs.image-tag }}

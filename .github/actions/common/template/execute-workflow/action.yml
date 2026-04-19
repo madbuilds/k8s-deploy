@@ -1,0 +1,53 @@
+# FILE: ./.github/actions/common/template/execute-workflow/action.yml
+# DESCRIPTION: executes workflow in the target repository
+
+name: 'EXECUTE repository workflow'
+description: 'Executes workflow by its name within target repository'
+
+inputs:
+  GITHUB_TOKEN:
+    description: 'github token'
+    required: true
+
+  workflow:
+    description: 'workflow to run'
+    required: true
+  repositories:
+    description: 'repositories to execute workflow in'
+    required: true
+
+  owner:
+    description: 'owner of the repository <owner>/<repo>'
+    required: false
+    default: ${{ github.repository_owner }}
+
+runs:
+  using: composite
+  steps:
+    - name: checkout
+      id: checkout
+      uses: actions/checkout@v6
+
+    - id: init
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        echo "[template] - init: looking for workflow - ${{ inputs.workflow }}"
+        
+        while read -r repository; do
+          [[ -z "$repository" ]] && continue
+          
+          # GET WORKFLOW LIST
+          WORKFLOW_LIST=$(gh workflow list --json id,state,path --repo ${{ inputs.owner }}/$repository)
+          echo ""
+          echo "[template] - init: workflow list of $repository - ${WORKFLOW_LIST}"
+        
+          if [[ "$WORKFLOW_LIST" == *"${{ inputs.workflow }}"* ]]; then
+            echo "[template] - init: running workflow - $repository:${{ inputs.workflow }}"
+            gh workflow run "${{ inputs.workflow }}" --repo ${{ inputs.owner }}/$repository --ref master
+          else
+            echo "[template] - init: Repository($repository) does not have ${{ inputs.workflow }}"
+          fi
+        
+        done < <(echo "${{ inputs.repositories }}" | tr -s '[:space:]' '\n')

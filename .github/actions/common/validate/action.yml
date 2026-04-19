@@ -1,0 +1,119 @@
+# FILE: ./.github/actions/common/validate/action.yml
+# DESCRIPTION: checks if github-action actually needs to be processed
+#              in case if action was called by some automation commit etc...
+
+name: 'VALIDATE repository before executing script'
+description: 'Validate and skip github action if needed'
+
+inputs:
+  GITHUB_ACTIONS_USERNAME:
+    description: 'username used for automated commits which should not trigger actions'
+    required: false
+    default: "github-actions[bot]"
+
+outputs:
+  repository_name:
+    description: 'returns name of the repository'
+    value: ${{ steps.repository.outputs.name }}
+  repository_type:
+    description: 'returns type of the repository specified in custom properties during repo creation'
+    value: ${{ steps.repository.outputs.type }}
+  repository_language:
+    description: 'returns main programming language specified in repository properties on creation'
+    value: ${{ steps.repository.outputs.language }}
+  should_publish:
+    description: 'should be published?'
+    value: ${{ steps.should_publish.outputs.required }}
+  environment:
+    description: 'provides environment name to be used for environment variables'
+    value: ${{ steps.environment.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: check if template
+      id: is_template
+      shell: bash
+      run: |
+        REPOSITORY=${{ github.repository }}
+        OWNER=${{ github.repository_owner }}
+        REPOSITORY_LOWER_CASE=$(echo "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
+        OWNER_LOWER_CASE=$(echo "$OWNER" | tr '[:upper:]' '[:lower:]')
+        
+        if [[ "${REPOSITORY_LOWER_CASE}" == "${OWNER_LOWER_CASE}/template-"* ]]; then
+          echo "::error::This action cannot be executed on template repositories - ${REPOSITORY}"
+          echo "::warning::SKIP: expected to be used non template repository"
+        
+          echo "REPOSITORY: ${REPOSITORY}" >> $GITHUB_STEP_SUMMARY
+          echo "SKIP: expected to be used in non template repository" >> $GITHUB_STEP_SUMMARY
+        
+          exit 1
+        fi
+
+        echo "Repository target is valid: ${REPOSITORY}"
+
+    - name: checkout
+      id: checkout
+      uses: actions/checkout@v6
+
+    - id: environment
+      shell: bash
+      run: |
+        EVENT_NAME=${{ github.event_name }}
+        EVENT_ACTION=${{ github.event.action }}
+        echo "Triggered by event: $EVENT_NAME ($EVENT_ACTION)"
+        
+        if [[ "${EVENT_NAME}" == "release" ]] \
+              && [[ "${EVENT_ACTION}" == "published" ]]; then
+          echo "Environmane name is: PRODUCTION"
+          echo "name=PRODUCTION" >> $GITHUB_OUTPUT
+        else
+          echo "Environmane name is: TEST"
+          echo "name=TEST" >> $GITHUB_OUTPUT
+        fi
+
+    - name: should image be published
+      id: author
+      shell: bash
+      run: |
+        COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an')
+        if [[ "${COMMIT_AUTHOR}" == "${{ inputs.GITHUB_ACTIONS_USERNAME }}" ]]; then
+          echo "::warning::SKIP: action is triggered by automated commit"
+          echo "is_bot=true" >> $GITHUB_OUTPUT
+        else
+          echo "triggered by ${COMMIT_AUTHOR}"
+          echo "is_bot=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: should run workflow
+      id: should_run
+      shell: bash
+      run: |
+        IS_BOT=${{ steps.author.outputs.is_bot }}
+        if [[ "${IS_BOT}" == "true" ]] \
+             && [[ "${{ github.event_name }}" != "release" ]]; then
+          echo "::error::Workflow should not be executed"
+          echo "::warning::latest commit is bot(${IS_BOT})"
+        
+          echo "SKIP: workflow execution being skipped by:" >> $GITHUB_STEP_SUMMARY
+          echo "latest commit is bot(${IS_BOT})" >> $GITHUB_STEP_SUMMARY
+        
+          exit 1
+        fi
+
+    - name: check repository vars
+      id: repository
+      shell: bash
+      run: |
+        NAME=${{ github.event.repository.name }}
+        TYPE=$(jq -r '.repository.custom_properties.type     | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+        LANG=$(jq -r '.repository.custom_properties.language | select(. != null and . != "unknown") // "default"' < "$GITHUB_EVENT_PATH")
+        echo "name=$NAME" >> $GITHUB_OUTPUT
+        echo "type=$TYPE" >> $GITHUB_OUTPUT
+        echo "language=$LANG" >> $GITHUB_OUTPUT
+
+    - name: summary
+      shell: bash
+      run: |
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.repository.outputs.language }}:${{ steps.repository.outputs.type }} > ${{ steps.environment.outputs.name }}:${{ steps.repository.outputs.name }}" >> $GITHUB_STEP_SUMMARY

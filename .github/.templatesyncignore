@@ -1,0 +1,8 @@
+./.github/k8s/*
+:!./.github/k8s/Chart.yaml
+./.github/workflows/repository-init.yml
+./.github/workflows/repository-update.yml
+./docs/description.webp
+./template
+./.gitignore
+./README.md

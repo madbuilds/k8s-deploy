@@ -1,0 +1,130 @@
+# FILE: ./.github/actions/common/template/protect-btanch/action.yml
+# DESCRIPTION: creates branch protection rules for the target repository
+
+name: 'PROTECT repository branch'
+description: 'Update repository protection rules'
+
+inputs:
+  GITHUB_TOKEN:
+    description: 'github token'
+    required: true
+
+  branch:
+    description: 'branch name to protect'
+    required: true
+  repositories:
+    description: 'repositories to protect branch'
+    required: true
+
+  owner:
+    description: 'owner of the repository <owner>/<repo>'
+    required: false
+    default: ${{ github.repository_owner }}
+
+runs:
+  using: composite
+  steps:
+    - name: checkout
+      id: checkout
+      uses: actions/checkout@v6
+
+    - id: init
+      shell: bash
+      run: |
+        echo "[template] - init: creating ruleset name for ${{ inputs.branch }} in ${{ inputs.repositories }}"
+        
+        RULENAME_PREFIX="[RULE"
+        RULENAME_SUFFIX="] ${{ inputs.branch }}"
+        
+        echo "rulename_prefix=${RULENAME_PREFIX}" >> $GITHUB_OUTPUT
+        echo "rulename_suffix=${RULENAME_SUFFIX}" >> $GITHUB_OUTPUT
+        echo "rulename=${RULENAME_PREFIX}${RULENAME_SUFFIX}" >> $GITHUB_OUTPUT
+
+    - id: target
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        echo "[template] - target: looking for existing rules in - ${{ inputs.repositories }}"
+        
+        existing_rule_id="$(
+          gh api \
+            -H "Accept: application/vnd.github.v3+json" \
+            "/repos/${{ inputs.owner }}/${{ inputs.repositories }}/rulesets" \
+          | jq -r '
+              ([.[] 
+                | select(.name | startswith("${{ steps.init.outputs.rulename_prefix }}"))
+                | select(.name |   endswith("${{ steps.init.outputs.rulename_suffix }}")) 
+                | select((.name | length) <= ("${{ steps.init.outputs.rulename }}" | length))
+                | .id
+              ] | first) // empty
+            '
+        )"
+        
+        if [[ -n "$existing_rule_id" ]]; then
+          echo "method=PUT" >> $GITHUB_OUTPUT
+          echo "path=/repos/${{ inputs.owner }}/${{ inputs.repositories }}/rulesets/$existing_rule_id" >> $GITHUB_OUTPUT
+          echo "[template] - target: rule been found - PUT:${{ inputs.repositories }}:$existing_rule_id"
+        else
+          echo "method=POST" >> $GITHUB_OUTPUT
+          echo "path=/repos/${{ inputs.owner }}/${{ inputs.repositories }}/rulesets" >> $GITHUB_OUTPUT
+          echo "[template] - target: rule not exists - POST:${{ inputs.repositories }}"
+        fi
+
+    - id: protect
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        echo "[template] - protect: protecting branch(${{ inputs.branch }}) in ${{ inputs.repositories }}"
+        
+        # API CALL: https://docs.github.com/ru/rest/repos/rules?#create-a-repository-ruleset
+        # bypass_actors org_admin -> 1
+        # bypass_actors maintain -> 2
+        # bypass_actors write -> 4
+        # bypass_actors admin -> 5
+        PAYLOAD="$(jq -n '
+        {
+          name: "${{ steps.init.outputs.rulename }}",
+          target: "branch",
+          enforcement: "active",
+          bypass_actors: [
+            {actor_id: 1,       actor_type: "OrganizationAdmin", bypass_mode: "pull_request"},
+            {actor_id: 5,       actor_type: "RepositoryRole",    bypass_mode: "pull_request"},
+            {actor_id: 1107463, actor_type: "Integration",       bypass_mode: "always"}
+          ],
+          conditions: {
+            ref_name: {
+              include: ["~DEFAULT_BRANCH"], 
+              exclude: [] 
+            } 
+          },
+          rules: [
+            { type: "deletion" },
+            { type: "required_signatures"},
+            { type: "pull_request", parameters: {
+              allowed_merge_methods: ["merge","squash"],
+              dismiss_stale_reviews_on_push: true,
+              require_code_owner_review: false,
+              require_last_push_approval: false,
+              required_approving_review_count: 1,
+              required_review_thread_resolution: true
+            }},
+            { type: "non_fast_forward" }
+          ]
+        }
+        ')"
+        
+        printf '%s' "$PAYLOAD" | gh api \
+          --method ${{ steps.target.outputs.method }} \
+          -H "Accept: application/vnd.github+json" \
+          ${{ steps.target.outputs.path }} \
+          --input -
+
+    - id: summary
+      shell: bash
+      run: |
+        echo "---" >> "$GITHUB_STEP_SUMMARY"
+        echo "- repo: \`${{ inputs.owner }}/${{ inputs.repositories }}\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "- ruleset: \`${{ steps.init.outputs.rulename }}\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "- request: \`${{ steps.target.outputs.method }}:${{ steps.target.outputs.path }}\`" >> "$GITHUB_STEP_SUMMARY"

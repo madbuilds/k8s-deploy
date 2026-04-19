@@ -1,0 +1,129 @@
+name: 'PUBLISH library to artifactory'
+description: 'Deploys library version to artifactory (+increment version on release)'
+
+inputs:
+  settings_path:
+    description: 'maven settings.xml path'
+    required: false
+    default: .github/maven/settings.xml
+  github_repository:
+    description: github repository id
+    required: false
+    default: ${{ github.repository }}
+  github_actor:
+    description: actor to use
+    required: false
+    default: ${{ github.actor }}
+  GITHUB_TOKEN:
+    description: GITHUB TOKEN
+    required: false
+    default: '${{ github.token }}'
+  GITHUB_ACTIONS_USERNAME:
+    description: 'username used for automated commits'
+    required: false
+    default: "github-actions[bot]"
+
+runs:
+  using: composite
+  steps:
+
+    - id: init
+      shell: bash
+      run: |
+        echo "[build] - init: retrieving version to be used"
+        
+        if [[ "${{ github.event_name }}" == "release" && "${{ github.event.action }}" == "published" ]]; then
+          echo "[build] - init: extracting version for release"
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)  
+          POM_VERSION=${POM_VERSION/-SNAPSHOT/}
+          TAG_VERSION=${GITHUB_REF#refs/tags/}
+          VERSION=${TAG_VERSION#v}
+        
+          echo "[build] - init: version to be used: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        
+          if ! [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::ERROR: invalid version format '$VERSION'"
+            echo "::warning::expected format: MAJOR.MINOR.PATCH (v1.2.3 or 1.2.3)"
+            exit 1
+          fi
+          if [ "$POM_VERSION" != "$VERSION" ]; then
+            echo "::error::ERROR: release and pom versions mismatch"
+            echo "::warning::pom.xml version($POM_VERSION) != release version($VERSION)"
+          fi
+        else
+          echo "[build] - init: extracting version for snapshot"
+          POM_VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)
+          POM_VERSION=${POM_VERSION/-SNAPSHOT/}
+          TIMESTAMP=$(date +'%Y%m%d')
+          BRANCH_NAME=${{ github.ref_name }}
+          BRANCH_NAME=${BRANCH_NAME//\//-}
+          VERSION=${POM_VERSION}-${TIMESTAMP}-${{ github.run_number }}${{ github.run_attempt }}-SNAPSHOT
+        
+          echo "[build] - init: version to be used: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+        fi
+
+    - id: java
+      uses: actions/setup-java@v5
+      with:
+        java-version: '25'
+        distribution: 'oracle'
+        cache: maven
+
+    - id: dependencies
+      shell: bash
+      run: |
+        echo "[build] - dependencies: downloading dependencies"
+        mvn --no-transfer-progress --batch-mode dependency:go-offline --settings "${{ inputs.settings_path }}"
+      env:
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ inputs.github_repository }}
+
+    - id: pom
+      shell: bash
+      run: |
+        echo "[build] - pom: updating version to ${{ steps.init.outputs.version }}"
+        mvn --no-transfer-progress --batch-mode versions:set -DnewVersion=${{ steps.init.outputs.version }} --settings "${{ inputs.settings_path }}"
+      env:
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ inputs.github_repository }}
+
+    - id: deploy
+      shell: bash
+      run: |
+        echo "[build] - deploy: build and deploy to artifactory"
+        echo "[build] - deploy: artifactory - ${{ inputs.github_repository }}"
+        mvn --no-transfer-progress --batch-mode deploy --settings "${{ inputs.settings_path }}"
+      env:
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ inputs.github_repository }}
+
+    - id: increment
+      if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+      shell: bash
+      run: |
+        echo "[build] - increment: updating next snapshot version"
+        
+        IFS='.' read -r majorVersion minorVersion patchVersion <<< "${{ steps.init.outputs.version }}"
+        NEXT_VERSION="${majorVersion}.$((minorVersion + 1)).0-SNAPSHOT"
+
+        echo "[build] - increment: current - ${{ steps.init.outputs.version }}"
+        echo "[build] - increment: next    - ${NEXT_VERSION}"
+        mvn --no-transfer-progress --batch-mode versions:set -DnewVersion=${NEXT_VERSION} --settings "${{ inputs.settings_path }}"
+      env:
+        GITHUB_ACTOR: ${{ inputs.github_actor }}
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+        GITHUB_REPOSITORY: ${{ inputs.github_repository }}
+
+    - id: commit
+      if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+      shell: bash
+      run: |
+        git config --global user.name  '${{ inputs.GITHUB_ACTIONS_USERNAME }}'
+        git config --global user.email '${{ inputs.GITHUB_ACTIONS_USERNAME }}@users.noreply.github.com'
+        git commit -am "snapshot: bump version for next iteration"
+        git push origin HEAD:${{ github.event.repository.default_branch }}

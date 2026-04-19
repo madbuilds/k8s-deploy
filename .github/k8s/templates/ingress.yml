@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.service.name }}
+  labels:
+    app: {{ .Values.service.name }} # ingress will have this label
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: {{ .Values.service.name }}{{- if ne .Values.deployment.environment "PRODUCTION" }}.dev{{- end }}.k3s.devim.keenetic.pro
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Values.service.name }}
+                port:
+                  number: 80
+  tls:
+    - hosts:
+        - {{ .Values.service.name }}{{- if ne .Values.deployment.environment "PRODUCTION" }}.dev{{- end }}.k3s.devim.keenetic.pro
+      secretName: app-{{ .Values.service.name }}-tls-secret

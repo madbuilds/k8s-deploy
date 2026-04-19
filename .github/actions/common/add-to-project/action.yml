@@ -1,0 +1,126 @@
+# FILE: ./.github/actions/common/add-to-project/action.yml
+# DESCRIPTION: adds issue/pr to github project(board) for better managing them
+#              qwe
+
+name: 'BOARD include item'
+description: 'adds current issue/pr or specified issue/pr to github project v2 board'
+
+inputs:
+  GITHUB_TOKEN:
+    description: 'github token'
+    required: true
+  project_owner:
+    description: 'project owner name'
+    required: true
+  project_number:
+    description: 'project number'
+    required: true
+
+  issue_number:
+    description: 'issue number'
+    required: false
+  pr_number:
+    description: 'pr number'
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - id: item
+      shell: bash
+      run: |
+        echo "[board] - item: checking item to be added"
+        if [ -n "${{ inputs.issue_number }}" ] || [ -n "${{ inputs.pr_number }}" ]; then
+          if [ -n "${{ inputs.issue_number }}" ] && [ -n "${{ inputs.pr_number }}" ]; then
+            echo "::error::[board] - item: only one of ISSUE or PR needs to be specified"
+            exit 1
+          fi
+          if [ -z "${{ inputs.project_owner }}" ] || [ -z "${{ inputs.project_number }}" ]; then
+            echo "::error::[board] - item: project owner or number is not specified"
+            exit 1
+          fi
+        
+          if [ -n "${{ inputs.issue_number }}" ]; then
+            echo "[board] - item: looking for ITEM_ID of ISSUE:${{ inputs.issue_number }}"
+            ITEM_ID=$(gh api "/repos/${{ github.repository }}/issues/${{ inputs.issue_number }}" | jq -r '.node_id')
+          fi
+          if  [ -n "${{ inputs.pr_number }}" ]; then
+            echo "[board] - item: looking for ITEM_ID of PR:${{ inputs.pr_number }}"
+            ITEM_ID=$(gh api "/repos/${{ github.repository }}/pulls/${{ inputs.pr_number }}" | jq -r '.node_id')
+          fi
+        else
+          echo "[board] - item: looking for contextual item"
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            echo "[board] - item: using contextual pull_request"
+            ITEM_ID="${{ github.event.pull_request.node_id }}"
+          elif [ "${{ github.event_name }}" == "issues" ]; then
+            echo "[board] - item: using contextual issue"
+            ITEM_ID="${{ github.event.issue.node_id }}"
+          else
+            echo "::error::[board] - item: unknown event name: ${{ github.event_name }}"
+            exit 1
+          fi
+        fi
+        
+        if [ -z "$ITEM_ID" ] || [ "$ITEM_ID" == "null" ]; then
+          echo "::error::[board] - item: ITEM_ID is not found"
+          exit 1
+        fi
+        
+        echo "[board] - item: founded ITEM_ID=$ITEM_ID"
+        echo "id=$ITEM_ID" >> $GITHUB_OUTPUT
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+
+    - id: project
+      shell: bash
+      run: |
+        echo "[board] - project: looking for PROJECT_ID"        
+        PROJECT_ID=$(gh api graphql -f query='
+          query($owner: String!, $number: Int!) {
+            organization(login: $owner) {
+              projectV2(number: $number) {
+                id
+              }
+            }
+          }
+        ' -f owner="${{ inputs.project_owner }}" -F number="${{ inputs.project_number }}" --jq '.data.organization.projectV2.id')
+  
+        if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
+          echo "::error::[board] - project: PROJECT_ID is not found"
+          exit 1
+        fi
+        
+        echo "[board] - project: founded PROJECT_ID=$PROJECT_ID"
+        echo "id=$PROJECT_ID" >> $GITHUB_OUTPUT
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+
+    - id: add
+      shell: bash
+      run: |
+        echo "[board] - add: adding item to project"
+        gh api graphql -f query='
+          mutation($projectId: ID!, $itemId: ID!) {
+            addProjectV2ItemById(input: {projectId: $projectId, contentId: $itemId}) {
+              item { id }
+            }
+          }
+        ' -f projectId="${{ steps.project.outputs.id }}" -F itemId="${{ steps.item.outputs.id }}"
+      env:
+        GITHUB_TOKEN: ${{ inputs.GITHUB_TOKEN }}
+
+    - id: summary
+      shell: bash
+      run: |
+        echo "> OUTPUT SUMMARY" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+        echo "item been added to board:" >> "$GITHUB_STEP_SUMMARY"
+        
+        echo "https://github.com/orgs/${{ inputs.project_owner }}/projects/${{ inputs.project_number }}" >> "$GITHUB_STEP_SUMMARY"
+        if [ -n "${{ inputs.issue_number }}" ]; then
+          echo "issue - https://github.com/${{ github.repository }}/issues/${{ inputs.issue_number }}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if  [ -n "${{ inputs.pr_number }}" ]; then
+          echo "pr    - https://github.com//${{ github.repository }}/pull/${{ inputs.pr_number }}" >> "$GITHUB_STEP_SUMMARY"
+        fi
