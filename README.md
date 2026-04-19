@@ -41,7 +41,7 @@
       </ul>
     </li>
     <li>
-      <a href="#-how-to-use">⚠️ How to use</a>
+      <a href="#%EF%B8%8F-how-to-use">⚠️ How to use</a>
       <ul>
         <li><a href="#inputs">Inputs</a></li>
         <li><a href="#basic-example">Basic Example</a></li>
