@@ -50,7 +50,7 @@ jobs:
           issue_number: ${{ inputs.issue_number }}
           pr_number: ${{ inputs.pr_number }}
 
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@v9
         if: github.event_name == 'issues'
         with:
           github-token: ${{ steps.auth.outputs.token }}
