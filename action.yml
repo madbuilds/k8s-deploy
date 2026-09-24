@@ -53,7 +53,7 @@ runs:
   using: composite
   steps:
     - id: checkout
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
 
     - id: kubectl
       name: 'install kubectl'
